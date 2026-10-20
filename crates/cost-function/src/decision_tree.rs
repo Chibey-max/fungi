@@ -4,13 +4,39 @@
 
 use std::collections::BTreeSet;
 
-use crate::{change::OutputWithoutScriptpubkey, wallet::Utxo};
+use bitcoin::TxOut;
+use rand::{RngCore, seq::SliceRandom};
 
-/// The coins to spend and the change outputs to create.
+use crate::{
+    action::{Action, UnSequencedActions},
+    wallet::Utxo,
+};
+
+/// The coins to spend, the payments to make and the change outputs to create.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Leaf {
     pub(crate) inputs: BTreeSet<Utxo>,
-    pub(crate) change: Vec<OutputWithoutScriptpubkey>,
+    pub(crate) payments: Vec<TxOut>,
+    pub(crate) change: Vec<TxOut>,
+}
+
+impl Leaf {
+    /// Outputs are shuffled so change does not always follow the payments.
+    pub(crate) fn to_sequence_of_actions(&self, rng: &mut impl RngCore) -> UnSequencedActions {
+        let inputs_actions = self
+            .inputs
+            .iter()
+            .map(|input| Action::RegisterInput(input.to_txin()));
+        let mut output_actions: Vec<Action> = self
+            .payments
+            .iter()
+            .chain(&self.change)
+            .map(|output| Action::RegisterOutput(output.clone()))
+            .collect();
+        output_actions.shuffle(rng);
+
+        UnSequencedActions(inputs_actions.chain(output_actions).collect())
+    }
 }
 
 /// Where the next unplaced intent could go.
@@ -39,6 +65,9 @@ pub(crate) struct Node {
 
 #[cfg(test)]
 mod tests {
+    use bitcoin::ScriptBuf;
+    use rand::{SeedableRng, rngs::StdRng};
+
     use super::*;
 
     fn nodes_of(tree: &DecisionTree) -> &[Node] {
@@ -59,6 +88,7 @@ mod tests {
     fn an_edge_places_one_intent_and_leads_to_the_rest() {
         let finished = Leaf {
             inputs: BTreeSet::new(),
+            payments: Vec::new(),
             change: Vec::new(),
         };
 
@@ -77,14 +107,13 @@ mod tests {
 
     #[test]
     fn iter_leaves_collects_every_leaf_in_tree_order() {
-        let output = |sats| OutputWithoutScriptpubkey {
+        let output = |sats| TxOut {
             value: bitcoin::Amount::from_sat(sats),
-            weight: bitcoin::Weight::ZERO,
-            satisfaction_weight: bitcoin::Weight::ZERO,
-            dust: bitcoin::Amount::ZERO,
+            script_pubkey: ScriptBuf::new(),
         };
         let leaf = |sats| Leaf {
             inputs: BTreeSet::new(),
+            payments: Vec::new(),
             change: vec![output(sats)],
         };
         let node = |subtree| Node { subtree };
@@ -101,5 +130,30 @@ mod tests {
             tree.iter_leaves().collect::<Vec<_>>(),
             vec![&leaf(1), &leaf(2), &leaf(3)]
         );
+    }
+
+    #[test]
+    fn change_is_not_always_the_last_output() {
+        let output = |sats| TxOut {
+            value: bitcoin::Amount::from_sat(sats),
+            script_pubkey: ScriptBuf::new(),
+        };
+        let leaf = Leaf {
+            inputs: BTreeSet::new(),
+            payments: vec![output(1), output(2)],
+            change: vec![output(3)],
+        };
+
+        let change_positions: BTreeSet<_> = (0..16)
+            .map(|seed| {
+                let actions = leaf.to_sequence_of_actions(&mut StdRng::seed_from_u64(seed));
+                actions
+                    .0
+                    .iter()
+                    .position(|action| *action == Action::RegisterOutput(output(3)))
+            })
+            .collect();
+
+        assert!(change_positions.len() > 1);
     }
 }
