@@ -38,9 +38,7 @@ impl fmt::Display for ShortId {
 
 /// A client for one directory, reached through one OHTTP relay.
 #[derive(Debug, Clone)]
-pub struct Client {
-    ohttp: OhttpClient,
-}
+pub struct Client(OhttpClient);
 
 /// Decodes the response to a [`Client::get`] request.
 pub struct GetContext(ResponseContext);
@@ -92,10 +90,9 @@ impl Client {
         if !is_supported(&directory) {
             return Err(UnsupportedUrl::Directory);
         }
-        Ok(Self {
-            ohttp: OhttpClient::new(relay, directory, key_config)
-                .known_length(PADDED_BHTTP_REQUEST_BYTES),
-        })
+        Ok(Self(
+            OhttpClient::new(relay, directory, key_config).known_length(PADDED_BHTTP_REQUEST_BYTES),
+        ))
     }
 
     /// Build a GET request for mailbox `id`.
@@ -120,7 +117,7 @@ impl Client {
         body: Option<&[u8]>,
     ) -> Result<(OhttpRequest, ResponseContext), Error> {
         Ok(self
-            .ohttp
+            .0
             .encapsulate(method, &format!("/{id}"), &[], &[], body)?)
     }
 }
